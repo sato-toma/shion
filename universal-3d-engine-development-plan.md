@@ -1,1147 +1,341 @@
-# Universal 3D Data Engine --- GitHub Development Plan
+# Universal 3D Data Engine 開発計画
 
-> **Project status:** Planning\
-> **Document version:** 0.1\
-> **Last updated:** 2026-11-17\
-> **Working name:** `universal-3d-engine`
+> **プロジェクト状態:** 計画中
+> **文書バージョン:** 0.3
+> **最終更新:** 2026-11-23
+> **作業名:** `universal-3d-engine`
 
-## 1. Project vision
+## 1. この文書の目的
 
-Build a cross-platform 3D spatial-data engine that can import, inspect,
-transform, optimize, validate, and export data from urban environments,
-factories, CAD systems, and real-world scans.
+本書は、CityGML形式の都市モデルデータをゲームエンジンへ取り込む、独立した実装の開発計画である。読み込み速度、取り込み粒度、複数エンジンでの再利用を重視する。
 
-The engine should preserve the meaning and structure of source data
-wherever possible, rather than flattening every input into a polygon
-mesh.
+初期の対象範囲を絞り、代表データで性能と粒度を検証できる小さな縦切りから始める。初期実装と終了条件はADR（Architecture Decision Record）に記録する。
 
-The project is not a Unity-only SDK or a Rust port of PLATEAU SDK. It is
-an engine-independent foundation that can be used by:
+### 1.1 設計上の前提
 
--   MCP clients and AI agents
--   Command-line tools and future desktop applications
--   Unity, Unreal Engine, Godot, and Blender
--   NVIDIA Omniverse and other OpenUSD-based workflows
--   Other applications through stable APIs and file formats
+- 最初の利用先はUnityとし、CityGML都市モデルの選択した範囲・地物をUnityシーンへ段階的に取り込む。
+- 入力形式の読み込みとエンジンへのデータ提供が主目的であり、任意の形式変換ツールは作らない。MVPの「出力」はUnity上のシーン・メッシュ・属性として利用可能にすることを指し、別形式ファイルへの書き出しは含めない。
+- 共通データ処理とエンジン固有アダプターを分離する。GodotとUnreal Engineへの対応は将来目標だが、Unityでの縦切りと技術検証を終えてから個別に追加する。
+- 独立した実装とし、上流リポジトリのIssue対応やフォークを前提にしない。既存コードを再利用する場合はライセンスと著作権表示を維持する。
 
-### 1.1 Primary goals
+## 2. 製品の目的と範囲
 
-1.  Integrate heterogeneous 3D and spatial data.
-2.  Preserve source semantics, topology, hierarchy, coordinate systems,
-    and metadata.
-3.  Support large datasets through indexing, tiling, streaming, and lazy
-    loading.
-4.  Provide repeatable conversion and optimization pipelines.
-5.  Validate output quality and target-application compatibility.
-6.  Expose capabilities through a local-first MCP server and CLI.
-7.  Build and test on Windows, Linux, and macOS.
+### 2.1 長期的な目的
 
-### 1.2 Non-goals for the initial releases
+CityGML形式の都市モデルを、必要な範囲と粒度でゲームエンジンへ取り込むための共通データ処理基盤を作る。元データの地物ID、属性、LOD、座標参照情報を可能な範囲で保持し、Unity、Godot、Unreal Engineの各アダプターから利用できる構成を目指す。
 
--   Replacing mature CAD kernels or 3D rendering engines.
--   Implementing every format and conversion direction at once.
--   Reconstructing every Gaussian Splatting scene as an exact mesh.
--   Making OpenUSD the mandatory internal representation.
--   Requiring a hosted server or cloud service.
--   Guaranteeing bit-identical floating-point output across all
-    operating systems and CPU architectures.
-
-## 2. Design principles
-
-### 2.1 C#-first, native code when justified
-
-Use C# and modern .NET for the main engine, orchestration, data model,
-pipeline, CLI, and MCP server.
-
-Use native libraries behind narrow interfaces when they provide mature
-or essential capabilities:
-
--   C++ / Open CASCADE Technology (OCCT) for CAD and B-Rep operations.
--   C++ / OpenUSD libraries for USD workflows where a suitable .NET
-    implementation is unavailable.
--   Native or GPU libraries for measured performance bottlenecks.
-
-Rust is optional. Introduce it only when a specific module benefits from
-it and benchmarks or safety requirements justify the additional language
-and build complexity.
-
-### 2.2 Engine-independent core
-
-The core must not depend on Unity, Unreal, Godot, Blender, or Omniverse
-APIs.
-
-Engine-specific adapters translate between the engine-independent model
-and the target application's concepts.
-
-### 2.3 Preserve meaning; make losses explicit
-
-Do not silently convert every input into a mesh.
-
-Keep source-specific representations where possible:
-
--   CAD: B-Rep, NURBS, topology, assemblies, units, tolerances.
--   Polygon data: vertices, faces, normals, UVs, materials.
--   Point clouds: positions, attributes, classification, coordinate
-    reference system.
--   Gaussian Splatting: position, scale, rotation, opacity,
-    spherical-harmonic coefficients, and source metadata.
--   GIS / city data: feature identity, attributes, hierarchy, semantic
-    classes, and CRS.
-
-Every conversion should declare: - What was preserved. - What was
-transformed. - What was approximated. - What was discarded. - What
-validation was performed.
-
-### 2.4 Local-first operation
-
-The default workflow should run locally:
-
--   MCP over stdio.
--   Local CLI and libraries.
--   Local files and cache.
--   No mandatory account, hosted service, or telemetry.
--   Explicitly scoped input/output directories.
-
-### 2.5 Reproducible processing
-
-A conversion should be representable as a recipe with explicit
-parameters, tool versions, input fingerprints, and output artifacts.
-
-## 3. High-level architecture
-
-``` mermaid
-flowchart TB
-    Client["MCP Client / AI Agent"]
-    CLI["CLI"]
-    Apps["Unity / Unreal / Godot / Blender"]
-    Omni["NVIDIA Omniverse"]
-
-    MCP["MCP Server"]
-    API["Public .NET API"]
-    Adapters["Engine Adapters"]
-
-    Core["C# Core Engine"]
-    Model["Spatial Data Model"]
-    Pipeline["Conversion Pipeline"]
-    Index["Spatial Index / Streaming"]
-    Validate["Validation / Optimization"]
-
-    Native["Native Interop Layer"]
-    OCCT["OCCT Adapter (C++)"]
-    USD["OpenUSD Adapter (C++)"]
-    GPU["Optional GPU / Native Modules"]
-
-    Formats["Format Modules"]
-    Artifacts["Local Dataset / Cache / Export Artifacts"]
+### 2.2 初期リリースの利用者と価値
 
-    Client --> MCP
-    CLI --> API
-    Apps --> Adapters
-    Omni --> Adapters
-    MCP --> API
-    Adapters --> API
-    API --> Core
-    Core --> Model
-    Core --> Pipeline
-    Core --> Index
-    Core --> Validate
-    Core --> Native
-    Native --> OCCT
-    Native --> USD
-    Native --> GPU
-    Core --> Formats
-    Formats --> Artifacts
-    Pipeline --> Artifacts
-```
-
-### 3.1 Main layers
-
-  -----------------------------------------------------------------------
-  Layer                   Responsibility          Initial implementation
-  ----------------------- ----------------------- -----------------------
-  Public API              Stable entry points for .NET
-                          applications            
-
-  MCP Server              AI-agent tools and      C# / .NET
-                          resources               
-
-  CLI                     Scriptable local        C# / .NET
-                          workflows               
-
-  Core                    Data model,             C# / .NET
-                          orchestration,          
-                          processing              
-
-  Format modules          Importers and exporters C# first; native
-                                                  bindings where needed
-
-  Native interop          Isolate C/C++           C ABI + P/Invoke
-                          dependencies            
-
-  Engine adapters         Application-specific    Separate projects
-                          integration             
-
-  Artifact store          Local datasets, cache,  Filesystem
-                          outputs, reports        
-  -----------------------------------------------------------------------
-
-## 4. Technology strategy
-
-Technology choices below are initial candidates, not permanent
-commitments. Confirm package health, supported platforms, licenses, and
-maintenance status before adoption.
-
-  -----------------------------------------------------------------------
-  Area                    Preferred approach      Notes
-  ----------------------- ----------------------- -----------------------
-  Main language           C# / modern .NET        Core, API, CLI, MCP
-
-  Native boundary         C ABI + P/Invoke        Avoid exposing C++
-                                                  classes directly
-
-  CAD kernel              OCCT                    Preserve B-Rep and
-                                                  assembly data
-
-  Scene interchange       OpenUSD                 Scene composition,
-                                                  hierarchy, references
-
-  Lightweight interchange glTF                    Runtime-oriented model
-                                                  delivery
-
-  Geospatial streaming    3D Tiles                Large spatial datasets
-                                                  and tiled delivery
-
-  Mesh optimization       meshoptimizer and       Benchmark before
-                          compatible tools        integration
-
-  Texture delivery        KTX2 / Basis Universal  Target-specific GPU
-                                                  formats may be produced
-                                                  later
-
-  Spatial indexing        R-tree or equivalent    Evaluate with
-                                                  representative datasets
-
-  CI                      GitHub Actions          Windows, Linux, macOS
-
-  Tests                   .NET test framework     Unit, integration,
-                                                  compatibility,
-                                                  performance
-
-  Packaging               NuGet and native        Add only when API
-                          artifacts               boundaries stabilize
-  -----------------------------------------------------------------------
-
-### 4.1 Native interop rules
-
--   Keep native dependencies behind small, versioned interfaces.
--   Prefer an opaque handle and C-compatible functions over C++ ABI
-    exposure.
--   Define ownership, lifetime, error handling, threading, and
-    cancellation rules.
--   Avoid copying large meshes or point clouds repeatedly across the
-    boundary.
--   Use file-backed or memory-mapped artifacts for large transfers where
-    appropriate.
--   Build and test native binaries independently for each supported OS
-    and architecture.
--   Make optional native capabilities discoverable at runtime.
--   Do not make C++/CLI a core dependency because it is
-    Windows-specific.
-
-Example conceptual boundary:
-
-``` c
-typedef struct CadDocumentHandle CadDocumentHandle;
-
-int cad_open_step(
-    const char* path_utf8,
-    CadDocumentHandle** out_document);
-
-int cad_export_mesh(
-    CadDocumentHandle* document,
-    const char* output_path_utf8,
-    const char* options_json_utf8);
-
-void cad_close_document(CadDocumentHandle* document);
-```
-
-The final ABI should be designed only after the required operations and
-data ownership model are understood.
-
-## 5. Supported data domains and formats
-
-The project should grow by vertical slices: complete a useful
-import-to-export workflow for one domain before adding many incomplete
-format readers.
-
-  -----------------------------------------------------------------------
-  Domain                  Candidate formats /     Important information
-                          technologies            to preserve
-  ----------------------- ----------------------- -----------------------
-  Urban / city            CityGML, PLATEAU, 3D    Feature IDs, semantics,
-                          Tiles                   LOD, CRS, attributes
-
-  CAD / factory           STEP, B-Rep, NURBS, IFC Topology, assemblies,
-                                                  units, tolerances,
-                                                  properties
-
-  Point cloud             LAS, LAZ, PLY           Coordinates,
-                                                  classification, color,
-                                                  intensity, CRS
-
-  Gaussian Splatting      PLY-based 3DGS, SPZ     Splat parameters, SH
-                          where supported         coefficients,
-                                                  transforms
-
-  Scene / model           OpenUSD, glTF, OBJ, FBX Hierarchy, transforms,
-                                                  materials, animation
-                                                  where supported
-
-  Spatial metadata        CRS definitions and     Units, provenance,
-                          domain-specific         coordinate
-                          metadata                transformations
-  -----------------------------------------------------------------------
-
-### 5.1 Format support levels
-
-Use explicit support levels instead of a binary supported/unsupported
-label:
-
--   **Level 0 --- Detect:** identify the format and report basic
-    metadata.
--   **Level 1 --- Inspect:** read metadata, hierarchy, bounds, and
-    statistics.
--   **Level 2 --- Import:** construct the corresponding internal
-    representation.
--   **Level 3 --- Transform:** support selected processing operations.
--   **Level 4 --- Export:** write the format with documented
-    preservation/loss behavior.
--   **Level 5 --- Production validated:** pass representative
-    real-world, large-data, and compatibility tests.
-
-Publish a capability matrix for each format and release.
-
-## 6. Internal spatial data model
-
-The internal model is the most important architectural decision. It
-should represent multiple geometry families without forcing them into
-one lowest-common-denominator mesh.
-
-### 6.1 Proposed model families
-
-``` text
-SpatialDataset
-├── DatasetMetadata
-├── CoordinateReferenceSystem
-├── Units
-├── FeatureCollection
-│   ├── FeatureIdentity
-│   ├── SemanticAttributes
-│   ├── Relationships
-│   └── Geometry
-│       ├── ParametricGeometry
-│       │   ├── BRep
-│       │   ├── NURBS
-│       │   └── CADAssembly
-│       ├── PolygonGeometry
-│       │   ├── Mesh
-│       │   └── MaterialAssignments
-│       ├── PointGeometry
-│       │   └── PointCloud
-│       ├── GaussianGeometry
-│       │   └── GaussianSplatSet
-│       └── SpatialGeometry
-│           ├── Bounds
-│           └── SpatialReference
-└── Provenance
-```
-
-This is a conceptual schema, not a requirement to implement every type
-immediately.
-
-### 6.2 Shared concepts
-
-Every suitable object should be able to carry:
-
--   Stable identity.
--   Parent/child and other relationships.
--   Local and world transforms.
--   Coordinate reference system and units.
--   Bounding volumes.
--   Semantic attributes.
--   Source provenance.
--   Version and schema information.
--   Optional references to original source data.
-
-### 6.3 Coordinate-system policy
-
--   Never assume all inputs use the same coordinate system or unit.
--   Store the source CRS and units explicitly.
--   Make coordinate transformations explicit pipeline steps.
--   Record the transformation definition and relevant library/version.
--   Test axis order, vertical datum, georeferencing, and
-    large-coordinate precision.
--   Consider local-origin or floating-origin techniques for rendering
-    large geospatial scenes.
-
-### 6.4 Conversion loss report
-
-Each conversion should generate a machine-readable report similar to:
-
-``` json
-{
-  "source_format": "STEP",
-  "target_format": "glTF",
-  "preserved": ["assembly_names", "transforms", "material_assignments"],
-  "approximated": ["curved_surfaces_as_triangles"],
-  "discarded": ["editable_brep_topology", "manufacturing_tolerances"],
-  "warnings": ["mesh_deflection_tolerance_applied"]
-}
-```
-
-The exact schema should be versioned and documented.
-
-## 7. OpenUSD and 3D Tiles responsibilities
-
-These formats serve different purposes and should coexist.
-
-  -----------------------------------------------------------------------
-  Technology                          Primary responsibility
-  ----------------------------------- -----------------------------------
-  OpenUSD                             Scene composition, hierarchy,
-                                      references, variants, assemblies,
-                                      interoperability
-
-  3D Tiles                            Spatial tiling, hierarchical level
-                                      of detail, streaming large
-                                      geospatial scenes
-
-  glTF                                Compact model interchange and
-                                      rendering-oriented delivery
-  -----------------------------------------------------------------------
-
-Do not make OpenUSD the only internal representation. Preserve
-source-specific geometry and semantics in the engine model, then export
-to USD or 3D Tiles according to the use case.
-
-## 8. Processing pipeline
-
-Represent processing as a graph or ordered recipe of typed operations.
-
-``` mermaid
+初期の対象は、CityGML形式の都市モデルをゲームエンジンで利用したい開発者とする。MVPではUnity向けに次の作業を可能にする。
+
+1. 利用者がローカルの都市モデルデータと対象範囲を指定する。
+2. 地物種別やLODを絞り、データ全体を一度に読み込まずに選択した地物を順次取り込む。
+3. 取り込み中の進捗を確認し、処理をキャンセルできる。
+4. 生成したUnityシーン上のメッシュから、元地物のIDや対応属性を参照できる。
+
+対象データ全体を一括ロードすることや、CityGMLから汎用3Dファイルへの変換はMVPの目的ではない。CIでは対応OS上でUnityパッケージをビルドし、少なくとも一つのEditModeまたは単体テスト経路を通す。CityGMLフィクスチャの取り込み結果も自動検証する。
+
+### 2.3 初期版で扱わないもの
+
+- CityGMLの全バージョン・全拡張・全都市モデルデータを一度に完全対応すること。
+- CityGMLからglTF、3D Tiles等への汎用ファイル変換・最適化パイプライン。
+- Unity・Godot・Unreal Engineの同時リリース、全機能の完全同等性。
+- CADのB-Rep編集、STEP/IFCの変換、点群、Gaussian Splatting。
+- 初期からのオンライン配信、分散処理、GPU処理、独自データベース。
+- 全入力情報の完全保持や、OS・エンジン間での完全同一出力。
+
+将来候補は、具体的な利用要求、代表データ、保守コストを確認してから個別に採否を決める。
+
+## 3. 実装方針
+
+### 3.1 小さな縦切りを優先する
+
+初期から全機能を一度に実装しない。CityGMLの小さな代表データをUnityへ取り込むまでを実装し、読み込み粒度・メモリ・応答性の改善を先に検証する。
+
+将来エンジン間で共有する境界は設計するが、Unity・Godot・Unreal Engineの抽象化層を最初から過剰に作らない。
+
+### 3.2 エンジン非依存コアと個別アダプター
+
+- 最初のUnity実装はC#で行い、CityGML読込、地物選択、共通データ表現とUnityシーン生成の境界を明示する。
+- コアの型や処理ロジックにUnityの`GameObject`、`Mesh`等を直接混在させない。Unity固有処理はUnityアダプターに置く。
+- GodotとUnreal Engineでの再利用方式は、各エンジンの言語・ランタイム・配布要件を調査してADRで決める。特にUnreal EngineからC#コアを直接使えるとは仮定せず、最小の技術検証を行う。
+- Unity Editorのバージョン、対応するホストOS、対象プラットフォームを固定し、CIと利用手順に記載する。
+- CityGML読込ライブラリを採用する場合は、必要なCityGMLバージョン、ストリーミング性、メモリ使用量、ライセンス、対応OSを代表データで検証する。
+- 独立した新規実装を基本とする。既存コードを再利用する場合は、MITライセンスを含む権利・著作権表示を保持する。
+- 公開APIは実利用が進み、利用者の要求が確認できるまでは安定版と約束しない。
+
+### 3.3 損失を隠さない
+
+読み込みで扱えない地物、属性、LOD、CRSを黙って破棄しない。対応範囲を文書化し、未対応・不正データ・部分取り込みを利用者が判別できるようにする。
+
+## 4. 初期アーキテクチャ
+
+```mermaid
 flowchart LR
-    Input["Source Dataset"]
-    Detect["Detect / Inspect"]
-    Import["Import"]
-    Select["Select Features"]
-    Transform["Transform / Convert"]
-    Optimize["Optimize / Tile"]
-    Validate["Validate"]
-    Export["Export Artifacts"]
-    Report["Report / Provenance"]
+    Data["CityGML"]
+    Reader["ストリーミング読込"]
+    Select["範囲・地物種別・LOD選択"]
+    Core["エンジン非依存の地物・形状バッチ"]
+    Unity["Unityアダプター"]
+    Scene["Unityシーン"]
+    Status["進捗・診断・キャンセル"]
 
-    Input --> Detect --> Import --> Select --> Transform
-    Transform --> Optimize --> Validate --> Export
-    Export --> Report
+    Data --> Reader --> Select --> Core --> Unity --> Scene
+    Reader --> Status
+    Select --> Status
 ```
 
-### 8.1 Pipeline requirements
-
--   Dry-run mode where practical.
--   Cancellation and progress reporting.
--   Bounded memory use and configurable memory budgets.
--   Resumable or restartable stages for long-running jobs.
--   Deterministic parameters and recorded tool versions.
--   Clear intermediate artifacts and cleanup policies.
--   Per-stage logs and structured diagnostics.
--   Validation before publishing final outputs.
--   No destructive modification of source datasets by default.
-
-### 8.2 Recipe example
-
-``` yaml
-name: factory-step-to-usd
-version: 1
-input:
-  path: ./input/factory.step
-  format: step
-steps:
-  - operation: inspect
-  - operation: import_step
-  - operation: preserve_assembly_hierarchy
-  - operation: generate_display_mesh
-    parameters:
-      linear_deflection: 0.1
-  - operation: export_usd
-    parameters:
-      output: ./output/factory.usd
-  - operation: validate_conversion
-output:
-  report: ./output/conversion-report.json
-```
-
-This is illustrative. Define a formal schema and validation rules before
-treating recipes as a stable public interface.
-
-## 9. Large-data performance
-
-Large urban datasets and factory scans must not require loading the
-entire source into memory.
-
-### 9.1 Required capabilities
-
--   Initial indexing and reusable metadata caches.
--   Spatial index for feature and tile lookup.
--   Lazy loading and streaming.
--   Spatial clipping and feature filtering.
--   Chunked processing with bounded memory.
--   LOD generation and selection.
--   Cache eviction and configurable memory budgets.
--   Parallel processing where operations are safely independent.
--   Progress, cancellation, and performance metrics.
-
-### 9.2 CityGML indexing
-
-CityGML is XML-based and may require a first-pass scan to build useful
-indexes.
-
-A practical workflow:
-
-1.  Scan the source and extract feature IDs, types, bounds, and
-    offsets/references where feasible.
-2.  Build a persistent index.
-3.  Store reusable metadata separately from derived geometry caches.
-4.  Load only the features or regions required by a query.
-5.  Invalidate or rebuild indexes when source fingerprints change.
-
-Do not promise arbitrary constant-time random access to every CityGML
-source.
-
-### 9.3 Texture and geometry optimization
-
--   Keep source textures when possible.
--   Consider KTX2/Basis Universal for portable texture delivery.
--   Produce platform-specific GPU texture formats only when the target
-    requires them.
--   Support mesh simplification, deduplication, index/vertex
-    optimization, and LOD.
--   Measure quality loss and size/performance trade-offs.
--   Keep optimization settings in named profiles.
-
-### 9.4 Optimization profiles
-
-Examples:
-
--   `generic-preview`
--   `unity-runtime`
--   `unreal-runtime`
--   `godot-runtime`
--   `blender-editing`
--   `omniverse-scene`
--   `geospatial-streaming`
-
-Profiles should be versioned and should expose their effective settings
-in reports.
-
-## 10. MCP and CLI design
-
-MCP is an interface to the engine, not the engine itself. MCP tools and
-CLI commands should call the same application services.
+初期版の責務は次の範囲に限る。
 
-### 10.5 Initial MCP tool groups
+| コンポーネント | 初期版の責務 |
+|---|---|
+| CityGMLリーダー | 選定したCityGMLデータの逐次読込と診断 |
+| 選択・スケジューラー | 範囲、地物種別、LODに基づく要求と段階的な取り込み |
+| 共通データ表現 | 地物ID、属性、座標情報、形状をエンジン非依存の単位で渡す |
+| Unityアダプター | 受け取った地物バッチからUnityのMesh等を生成し、属性参照を提供 |
+| 取り込み状態 | 進捗、キャンセル、警告、部分取り込み結果を利用者に伝える |
 
-**Discovery and inspection** - `detect_format` - `inspect_dataset` -
-`list_features` - `search_features` - `get_feature_attributes` -
-`get_geometry_summary`
+初期版では、汎用ファイル変換CLI、MCP、ネイティブ境界、独自キャッシュDBを作らない。
 
-**Conversion** - `convert_dataset` - `export_gltf` - `export_usd` -
-`export_3dtiles` - `export_point_cloud`
+## 5. MVPの仕様
 
-**Spatial processing** - `clip_by_bounds` - `filter_features` -
-`transform_coordinates` - `simplify_geometry` - `generate_lod`
+### 5.1 対応範囲
 
-**CAD and factory** - `inspect_step` - `inspect_assembly` -
-`generate_display_mesh` - `check_collision` - `analyze_clearance` -
-`compare_scan_to_cad`
+最初のスコープは、選定した一つのCityGML都市モデルデータセットをUnityへ取り込む機能とする。形式バージョン、データセット、必要な地物と属性をフェーズ0で確定する。
 
-**Gaussian Splatting** - `inspect_gaussian_splats` -
-`transform_gaussian_splats` - `compress_gaussian_splats` -
-`convert_gaussian_splats`
+| 項目 | MVPでの扱い |
+|---|---|
+| 入力 | ローカルのCityGML都市モデルデータ。オンラインデータ取得は後続候補 |
+| CityGMLバージョン | 選定データセットの実バージョンに限定して対応する |
+| 選択粒度 | 少なくとも対象範囲と地物種別を指定でき、可能な範囲で個別地物を逐次処理する |
+| LOD・属性 | 対象データに存在する必要LOD・地物ID・属性をADRで固定し、テストする |
+| Unity上の表現 | 地物単位の意味情報を保持しつつ、描画用Meshのグルーピング粒度は別に扱う。地物ごとに必ずGameObjectを作る設計にはしない |
+| 座標 | 選定データのCRSを明示し、Unityローカル座標への原点・精度方針を定める。未知のCRSを推測しない |
+| 大容量処理 | XML DOM等でデータ全体を一括保持しない方式を優先し、時間・ピークメモリ・初回表示時間を測定する |
+| 出力 | Unityシーン上のMesh等を提供する。別形式ファイルへのエクスポートはMVP対象外 |
 
-**Validation** - `validate_conversion` - `compare_source_and_output` -
-`validate_target_profile`
+### 5.2 インポート要求と粒度
 
-Start with a small set of reliable tools. Add operations only when the
-underlying engine capability and error behavior are well-defined.
+MVPでは、Unity上の最小限のインポートAPIまたはEditor操作から、次を指定できるようにする。
 
-### 10.6 MCP safety and usability
+- 入力データのパス。
+- 対象範囲（選定データで実現可能な方法）。
+- 地物種別とLOD。
+- 処理の進捗確認とキャンセル。
 
--   Use stdio for the initial local MCP server.
--   Restrict access to explicitly configured input and output roots.
--   Require explicit output paths or safe defaults.
--   Do not overwrite source data.
--   Validate paths and reject traversal outside allowed roots.
--   Set size, time, and memory limits where practical.
--   Return job IDs and concise summaries for long-running tasks.
--   Store detailed logs and reports as local artifacts instead of
-    returning huge geometry payloads.
--   Treat input files and embedded metadata as untrusted data.
+論理上の地物単位と描画上のMesh生成単位を分離する。個々の地物ID・属性を失わずに、描画用ジオメトリを適切な単位でまとめられる構成を検証する。進捗はデータ全体の読込完了まで待たせず、利用可能になった単位からUnityへ渡す。
 
-### 10.3 CLI
+### 5.3 最小限のエンジン非依存データ
 
-The CLI should expose the same operations for scripts, CI, and
-debugging.
+次の概念だけを、選定したCityGMLデータからUnityへ渡す。
 
-Illustrative commands:
+- 地物ID、地物種別、必要な属性。
+- LODと、地物に関連付く形状。
+- 元のCRS情報と、適用した座標原点・変換情報。
+- バッチ単位の進捗、警告、失敗情報。
 
-``` bash
-u3d inspect ./data/city.gml
-u3d index build ./data/city/
-u3d convert ./data/factory.step --to usd --out ./out/factory.usd
-u3d validate ./out/factory.usd
-u3d benchmark ./data/large-city/
-```
+これは各地物をC#オブジェクトにする指示ではない。地物数・頂点数の多い入力に対するメモリ配置、地物の識別方法、Meshのグルーピングは、代表的な都市モデルデータの計測に基づいて決める。Unity固有の型はアダプター内に閉じ込める。
 
-Command names and flags are provisional.
+## 6. 形式追加の判断基準
 
-## 11. Engine and application adapters
+MVPではCityGMLを入力として扱う。ほかの形式はUnityへの入力需要を確認してから追加し、汎用変換機能のために一括対応しない。配信形式や書き出し形式は、読み込み基盤が安定した後に別途判断する。
 
-Adapters must remain separate from the core.
+| 優先度・領域 | 候補形式 | 役割と追加前に必要な検証 |
+|---|---|---|
+| MVP | [CityGML](https://www.ogc.org/standards/citygml/)形式の都市モデルデータ | 選定した一つのデータセットとバージョンに限定し、Unityへ段階的に取り込む |
+| 次候補・都市データ | CityJSON、CityGMLの別バージョン | 利用者が必要とする実データを確認してから追加する |
+| 次候補・配信 | [3D Tiles 1.1](https://www.ogc.org/standards/3dtiles/) | ランタイムでの大規模データ配信が必要になった場合に評価する。MVPの入力形式・変換出力ではない |
+| 次候補・建築 | IFC | BIMデータ取り込みの具体的需要、必要な意味情報、利用ライブラリの配布条件を確認する |
+| 次候補・モデル／スキャン | glTF / GLB、LAS / LAZ、E57、PLY、OpenUSD | ゲームエンジンへの入力需要と、対象エンジン側の取り込み方法を形式ごとに検証する |
+| 調査対象 | OBJ、FBX、STL、Gaussian SplattingのPLY系・SPZ等 | 対象ユーザーのデータで必要性が確認できるまで、実装やサポートを約束しない |
 
-  -----------------------------------------------------------------------
-  Adapter                 Purpose                 Initial scope
-  ----------------------- ----------------------- -----------------------
-  Unity                   Import results into     glTF or engine-neutral
-                          Unity projects          artifact import,
-                                                  validation
+形式を追加する際は、少なくとも以下を満たす。
 
-  Blender                 Modeling and inspection Import/export and
-                          workflow                metadata preservation
-                                                  tests
+1. 対象利用者と、ゲームエンジン内での具体的な利用ユースケースがある。
+2. 再配布可能な小さな代表データ、または取得可能な代替テストデータがある。
+3. 利用ライブラリの保守状況、OS対応、ライセンスを確認した。
+4. 「対応」とする機能と、警告・未対応にする機能を列挙した。
+5. ファイル読み込みからエンジン内で利用できる状態までのテスト可能な縦切りを定義した。
+6. 初回表示時間、総取り込み時間、ピークメモリ、粒度の測定方法と目標を定めた。
 
-  Unreal                  Runtime and             USD/glTF delivery tests
-                          visualization           
+## 7. データ保護とエラー処理
 
-  Godot                   Runtime and             glTF delivery tests
-                          visualization           
+- 入力データを変更しない。ローカルファイルの読み込みを初期対象とし、オンライン取得は別途設計する。
+- 破損、未対応、制限超過、I/O失敗を区別して利用者に報告する。
+- 一部の地物だけ取り込めた場合は、成功・警告・失敗した対象を報告し、全件成功と誤認させない。
+- 長時間の読込には進捗とキャンセルを提供する。キャンセル時のUnityシーン状態を定義する。
+- XMLパーサーに不正入力を与えるテストを用意し、外部エンティティ処理や深さ・サイズ制限を確認する。
+- 外部データ参照やオンライン取得を追加する際は、アクセス可能なURI、認証情報、キャッシュ、ネットワーク失敗を個別に設計する。
 
-  Omniverse               USD-based scene         USD export/import and
-                          workflows               metadata tests
-  -----------------------------------------------------------------------
+## 8. テストと品質基準
 
-Do not build all adapters in the first milestone. Start with file-based
-interoperability, then add application-specific APIs only when needed.
+### 8.1 MVPで必要なテスト
 
-## 12. Cross-platform strategy
+1. **単体テスト:** 地物選択、LOD、CRS原点、進捗・キャンセル、共通データ表現。
+2. **読込テスト:** 対応するCityGMLデータ、欠損属性、未知要素、破損・不正XML。
+3. **Unity EditModeテスト:** 選択した地物がMeshと属性参照に反映されること。
+4. **統合テスト:** 小さなCityGMLフィクスチャの読み込みからUnityシーン生成まで。
+5. **性能テスト:** 同じ代表都市モデルデータとマシンで初回表示時間、総時間、ピークメモリ、取り込み件数を計測する。
+6. **OS固有データテスト:** OS固有の形式、圧縮、文字コード、ファイルシステム機能を使う場合は、該当OS上で実際に読み込み・利用できることを確認する。
 
-### 12.1 Initial target matrix
+### 8.2 テストデータ
 
-  ------------------------------------------------------------------------
-  Platform                                  Priority Initial target
-  --------------------- ---------------------------- ---------------------
-  Windows x64                                     P0 Core, CLI, MCP,
-                                                     native adapters
+- リポジトリには小さく、ライセンスと出所を確認したフィクスチャだけを置く。
+- 各フィクスチャに出所、ライセンス、期待する形式・属性・構造、既知の制約を記録する。
+- 大容量データや再配布できないデータはコミットせず、任意のローカルテストとして手順を記載する。
+- テストは出力バイト列ではなく、選択した地物ID、属性、LOD、メッシュ・頂点数、座標範囲を検証する。
+- 性能比較には同じデータセット、Unityバージョン、マシン条件を使い、計測条件を記録する。
 
-  Linux x64                                       P0 Core, CLI, MCP,
-                                                     native adapters
+### 8.3 MVPの完了条件
 
-  macOS Apple Silicon                             P1 Core, CLI, MCP;
-                                                     native support as
-                                                     dependencies permit
+- Unity Editorの固定バージョンで選定したCityGML都市モデルデータの範囲をUnityシーンへ取り込める。
+- 対象範囲と地物種別を指定でき、データ全体を一つの巨大なシーンオブジェクトとして一括生成しない。
+- 地物ID・対象属性と生成メッシュの対応を確認できる。
+- 対応ホストOSごとのGitHub Actionsビルドが成功し、少なくとも一つのUnity EditMode／単体テスト経路が成功する。
+- CIに小さな再配布可能CityGMLフィクスチャを用いた取り込みテストがある。
+- 初回表示時間、総取り込み時間、ピークメモリを同一条件で計測し、フェーズ0で決めた改善目標を評価できる。
+- 対応CityGML版、既知の制約、サポート対象Unity版が公開されている。
 
-  Windows ARM64                                   P2 Evaluate after x64
-                                                     stability
+## 9. 開発環境とCI
 
-  Linux ARM64                                     P2 Evaluate after x64
-                                                     stability
+- Unity Editorのバージョンを固定し、GitHub ActionsでWindows・Linux・macOSのうちプロジェクトがサポートするホストOSごとにパッケージのコンパイルを確認する。
+- 少なくとも一つの代表OS・UnityバージョンでUnity EditModeまたは単体テストを実行し、CIで成功させる。
+- OS固有のデータ形式や機能を利用する場合は、該当するGitHub Actions runner上で専用の読み込み・利用テストを実行する。
+- CIで必要なUnityライセンス、ビルドモジュール、runner制約をフェーズ0で検証し、実際に通るマトリクスだけを対応環境として公開する。
+- CIは小さなCityGMLフィクスチャのUnity取り込みテストを実行する。大容量性能ベンチマークは通常のPR必須ゲートと分け、同条件で計測する。
+- Unity Package Managerと外部依存のバージョンを固定し、CIと開発環境で同じ依存を使う。
+- エンジン間の共通コアを別ランタイムとして導入する場合は、そのSDKと依存関係の固定方法を別途定める。初期計画の中心はUnity Editorであり、`.NET SDK`だけでUnity環境全体を再現できるとは見なさない。
 
-  macOS Intel                                     P3 Support based on
-                                                     demand and dependency
-                                                     availability
-  ------------------------------------------------------------------------
+## 10. 初期リポジトリ構成
 
-### 12.2 CI requirements
+初期段階では実際に必要なプロジェクトだけを作る。
 
-Use GitHub Actions to run:
-
--   Formatting and static analysis.
--   Unit tests.
--   Integration tests.
--   Native interop tests.
--   Cross-platform builds.
--   Package and artifact checks.
--   Dependency and license checks.
--   Representative performance tests on controlled runners.
-
-Do not compare raw performance numbers across different hosted runner
-types as if they were equivalent.
-
-### 12.3 Numerical correctness
-
-Floating-point results may vary across OS, CPU, compiler, and native
-dependency versions.
-
-Use: - Geometric tolerances. - Bounds and topology checks. - Attribute
-and feature-count checks. - Conversion-loss reports. - Golden datasets
-with documented expected ranges.
-
-Do not require bit-for-bit identical geometry unless a specific
-operation can genuinely guarantee it.
-
-## 13. Testing and quality strategy
-
-### 13.1 Test layers
-
-1.  **Unit tests:** coordinate math, transforms, model invariants,
-    serialization.
-2.  **Format tests:** known-good samples, malformed inputs, edge cases.
-3.  **Integration tests:** import → process → export.
-4.  **Interop tests:** C# ↔ native library ownership, errors,
-    cancellation, threading.
-5.  **Compatibility tests:** import into target applications and inspect
-    expected properties.
-6.  **Performance tests:** memory, throughput, latency, cache
-    effectiveness.
-7.  **Regression tests:** compare output metrics against approved
-    baselines.
-
-### 13.2 Test-data policy
-
-Maintain small, redistributable fixtures in the repository and larger
-opt-in datasets outside normal CI.
-
-For each fixture, record: - Source and license. - Expected
-format/version. - Coordinate system and units. - Expected feature counts
-and bounds. - Known limitations. - Expected conversion behavior.
-
-Do not commit large or unlicensed real-world datasets.
-
-### 13.3 Quality gates
-
-A format module should not be called production-ready until it has: -
-Documented supported features. - Error and warning behavior. - Tests for
-malformed and representative inputs. - Memory and performance
-measurements. - Conversion-loss documentation. - Cross-platform
-status. - License and dependency review.
-
-## 14. Repository structure
-
-A starting monorepo layout:
-
-``` text
+```text
 universal-3d-engine/
-├── Universal3D.sln
 ├── src/
-│   ├── Universal3D.Core/
-│   ├── Universal3D.SpatialModel/
-│   ├── Universal3D.Coordinates/
-│   ├── Universal3D.Pipeline/
-│   ├── Universal3D.SpatialIndex/
-│   ├── Universal3D.Streaming/
-│   ├── Universal3D.Optimization/
-│   ├── Universal3D.Validation/
-│   ├── Universal3D.Metadata/
-│   ├── Universal3D.Formats.CityGML/
-│   ├── Universal3D.Formats.Gltf/
-│   ├── Universal3D.Formats.PointCloud/
-│   ├── Universal3D.Formats.GaussianSplat/
-│   ├── Universal3D.Formats.Usd/
-│   ├── Universal3D.NativeInterop/
-│   ├── Universal3D.McpServer/
-│   ├── Universal3D.HttpApi/          # Optional, opt-in
-│   └── Universal3D.Cli/
-├── python/
-│   └── universal3d/                  # Python SDK package
-├── native/
-│   ├── OcctAdapter/
-│   └── OpenUsdAdapter/
-├── adapters/
-│   ├── Unity/
-│   ├── Unreal/
-│   ├── Godot/
-│   ├── Blender/
-│   └── Omniverse/
-├── schemas/
-├── docs/
-│   ├── architecture/
-│   ├── formats/
-│   ├── decisions/
-│   └── workflows/
-├── test/
-│   ├── Unit/
-│   ├── Integration/
-│   ├── Interop/
-│   ├── Compatibility/
-│   └── Fixtures/
-├── benchmarks/
+│   ├── Core/                         # エンジン非依存の型と読込制御
+│   ├── Readers/
+│   │   └── CityGML/                  # 選定CityGML版のReader
+│   └── GameEngines/
+│       └── Unity/                    # Unity連携
+│           ├── Runtime/
+│           ├── Editor/
+│           ├── Tests/
+│           └── package.json
+├── tests/
+│   ├── Core.Tests/
+│   └── Readers/
+│       └── CityGML.Tests/
+├── test-data/
+│   └── README.md
 ├── samples/
-├── scripts/
-└── .github/
-    ├── ISSUE_TEMPLATE/
-    ├── workflows/
-    ├── PULL_REQUEST_TEMPLATE.md
-    └── CODEOWNERS
+├── docs/
+│   └── decisions/
+├── .github/
+│   └── workflows/
+├── .gitattributes
+├── .gitignore
+└── README.md
 ```
 
-Keep projects small enough to test independently. Do not create empty
-projects for every future format on day one.
+製品コードは責務別に`src/`へまとめる。CityGMLのReaderとゲームエンジン連携を分け、Unity固有のRuntime、Editor、テスト、Package Manager定義は`src/GameEngines/Unity/`内に置く。Godot、Unreal Engineの階層は実装を始める段階で追加し、空のプロジェクトを先行して作らない。
 
-## 15. Development roadmap
+## 11. 段階的な開発ロードマップ
 
-The roadmap is milestone-based. Dates should be assigned after the first
-technical spikes establish realistic effort.
+日付や人数を推測して約束しない。各段階は終了条件を満たしてから次へ進む。
 
-### Milestone 0 --- Project foundation
-
-**Goal:** Make the repository buildable, testable, and understandable.
-
-Tasks: - \[ \] Choose repository name and license after dependency
-review. - \[ \] Create solution and initial project structure. - \[ \]
-Define supported .NET SDK and target frameworks. - \[ \] Add formatting,
-analyzers, and unit-test projects. - \[ \] Add GitHub Actions for
-Windows, Linux, and macOS builds. - \[ \] Add contribution guide and
-code of conduct if accepting external contributions. - \[ \] Create
-architecture decision record (ADR) template. - \[ \] Document local
-build and test instructions.
+### フェーズ0: 対象データと改善目標の確定
 
-**Exit criteria:** - Clean checkout builds on the supported CI matrix. -
-Tests run on all P0 platforms. - Architecture and contribution
-documentation exists.
+**目的:** 「遅い」「取り込み単位が大きい」を測定可能な要件にする。
 
-### Milestone 1 --- Spatial model and coordinate foundations
-
-**Goal:** Establish the stable concepts shared by all format modules.
-
-Tasks: - \[ \] Define dataset, feature, geometry, metadata, and
-provenance abstractions. - \[ \] Define geometry-family interfaces
-without forcing all data into meshes. - \[ \] Define coordinate
-reference system and unit abstractions. - \[ \] Define transforms and
-bounding-volume types. - \[ \] Define stable IDs and relationship
-representation. - \[ \] Define serialization and schema-versioning
-strategy. - \[ \] Add representative model fixtures and invariant
-tests. - \[ \] Write ADRs for internal model and coordinate policy.
-
-**Exit criteria:** - A dataset can represent more than one geometry
-family. - CRS, units, transforms, identity, and provenance are
-explicit. - Model serialization round-trips within documented
-tolerances.
-
-### Milestone 2 --- First end-to-end vertical slice
-
-**Goal:** Prove that the architecture can import, process, export, and
-validate a real dataset.
-
-Recommended initial slice: - STEP → OCCT → internal CAD/assembly
-representation → display mesh → glTF or USD.
-
-Alternative if urban data is the immediate priority: - CityGML / PLATEAU
-→ feature model → spatial filtering → glTF or 3D Tiles.
-
-Tasks: - \[ \] Select one small, redistributable fixture. - \[ \]
-Implement format detection and inspection. - \[ \] Implement importer
-and required native boundary if applicable. - \[ \] Preserve IDs,
-hierarchy, units, and metadata that the target supports. - \[ \]
-Implement one useful transformation. - \[ \] Implement one exporter. -
-\[ \] Generate a conversion-loss report. - \[ \] Add integration and
-benchmark tests.
-
-**Exit criteria:** - One complete, repeatable conversion works on
-Windows and Linux. - The output is independently inspectable in a target
-application. - Losses and unsupported source features are reported.
-
-### Milestone 3 --- Native interop and CAD foundation
-
-**Goal:** Make C++ dependencies maintainable and safe to call from C#.
-
-Tasks: - \[ \] Define C ABI conventions and versioning. - \[ \]
-Implement opaque handles and explicit lifetime management. - \[ \]
-Define native error codes and C# exception mapping. - \[ \] Test
-repeated open/close and failure paths. - \[ \] Test cancellation and
-thread-safety assumptions. - \[ \] Build native dependencies on Windows
-and Linux. - \[ \] Add macOS support where dependency builds are
-viable. - \[ \] Document third-party licenses and redistribution
-constraints.
-
-**Exit criteria:** - Native modules can be loaded and used without
-leaking handles or memory. - Errors cross the boundary predictably. - CI
-builds and tests the supported native matrix.
-
-### Milestone 4 --- City data and spatial indexing
-
-**Goal:** Support useful processing of large urban datasets without
-loading everything into memory.
+- [ ] 一つの再配布可能なCityGMLサンプルと、一つの実運用規模データを選ぶ。
+- [ ] 固定したUnity版・マシンで現行SDKと新実装候補の読み込み時間、初回表示時間、ピークメモリ、選択単位を計測する。
+- [ ] 必要な取り込み粒度（範囲、地物種別、LOD、個別地物）と、最低限保持する属性を定義する。
+- [ ] CityGMLの版、エンコーディング、CRS、データサイズを確認し、Reader候補を比較する。
+- [ ] Unity以外のGodot / Unreal Engine利用形態と言語・ランタイム制約を調査する。実装前に小さな共有コードの技術検証を行う。
+- [ ] 独立実装で改善すべき利用者課題と、対応範囲を文書化する。
 
-Tasks: - \[ \] Implement CityGML/PLATEAU inspection. - \[ \] Extract
-feature IDs, types, bounds, and selected attributes. - \[ \] Build a
-persistent metadata and spatial index. - \[ \] Add spatial queries and
-clipping. - \[ \] Add lazy loading and bounded-memory processing. - \[
-\] Add coordinate transformation workflows. - \[ \] Add a first 3D Tiles
-export or integration path. - \[ \] Benchmark against representative
-city data.
-
-**Exit criteria:** - A region or feature subset can be processed without
-loading the full dataset. - Index creation and reuse are measured. - CRS
-and feature identity are validated through the pipeline.
-
-### Milestone 5 --- Scene interchange and OpenUSD
-
-**Goal:** Support scene-level interchange while preserving hierarchy and
-references.
-
-Tasks: - \[ \] Define USD mapping for internal geometry families. - \[
-\] Implement or integrate OpenUSD through an isolated native adapter. -
-\[ \] Export transforms, hierarchy, names, and supported metadata. - \[
-\] Test assemblies and instancing where supported. - \[ \] Document
-unsupported or lossy mappings. - \[ \] Test in an OpenUSD-compatible
-application, including Omniverse where available.
-
-**Exit criteria:** - Representative scenes export and reopen with
-expected hierarchy and transforms. - Metadata preservation and losses
-are documented. - Native USD dependencies are isolated from the core.
-
-### Milestone 6 --- Point clouds and Gaussian Splatting
-
-**Goal:** Add real-world scan data without treating it as ordinary mesh
-data.
-
-Tasks: - \[ \] Add point-cloud inspection and import. - \[ \] Preserve
-coordinates, attributes, and CRS. - \[ \] Add chunked processing and
-spatial filtering. - \[ \] Add Gaussian Splatting inspection and native
-representation. - \[ \] Preserve splat parameters and spherical-harmonic
-data where supported. - \[ \] Evaluate compression and interchange
-formats such as SPZ. - \[ \] Add USD or other target export paths where
-supported. - \[ \] Document the limits of Gaussian-to-mesh
-reconstruction. - \[ \] Benchmark file size, memory, and
-rendering-oriented output.
-
-**Exit criteria:** - Point clouds and Gaussian data have distinct
-internal representations. - Supported transformations preserve the
-relevant source attributes. - Lossy conversions are explicit and tested.
-
-### Milestone 7 --- Optimization and target profiles
-
-**Goal:** Make outputs practical for real-time and large-scene
-applications.
-
-Tasks: - \[ \] Implement mesh optimization and LOD pipeline. - \[ \]
-Evaluate meshoptimizer integration. - \[ \] Evaluate KTX2/Basis
-Universal texture pipeline. - \[ \] Add configurable memory and
-output-size budgets. - \[ \] Define target profiles for Unity, Unreal,
-Godot, Blender, and Omniverse. - \[ \] Add profile validation and
-reports. - \[ \] Benchmark quality versus file size and processing time.
-
-**Exit criteria:** - Profiles are versioned and reproducible. - Output
-validation reports profile-specific results. - Optimization does not
-silently remove semantic data.
-
-### Milestone 8 --- MCP and CLI public workflows
-
-**Goal:** Make the engine usable by people, scripts, and AI agents.
-
-Tasks: - \[ \] Implement CLI commands for inspect, convert, validate,
-and benchmark. - \[ \] Implement local stdio MCP server. - \[ \] Add a
-small, stable set of MCP tools. - \[ \] Add job progress, cancellation,
-and artifact references. - \[ \] Add path restrictions and safe
-overwrite behavior. - \[ \] Add structured logs and machine-readable
-reports. - \[ \] Write MCP usage examples and agent instructions. - \[
-\] Test with at least one MCP client.
-
-**Exit criteria:** - CLI and MCP invoke the same application services. -
-Long-running jobs return useful progress and artifact information. -
-Local execution does not require a hosted service.
-
-### Milestone 9 --- Application adapters and release readiness
-
-**Goal:** Validate the engine in real application workflows.
-
-Tasks: - \[ \] Create a Unity adapter or sample package. - \[ \]
-Validate import and runtime constraints relevant to Cluster workflows. -
-\[ \] Add Blender workflow tests. - \[ \] Add Unreal and Godot adapters
-when justified by demand. - \[ \] Validate Omniverse USD workflows. - \[
-\] Publish format capability matrix. - \[ \] Publish performance and
-memory benchmarks. - \[ \] Review API stability, licensing, security,
-and packaging. - \[ \] Prepare release notes and migration policy.
-
-**Exit criteria:** - At least two independent applications consume
-generated artifacts successfully. - Supported OS and format matrices are
-published. - Known limitations and compatibility results are documented.
-
-## 16. GitHub project management
-
-### 16.1 Recommended labels
-
-  Label                  Meaning
-  ---------------------- -------------------------------
-  `type:feature`         New capability
-  `type:bug`             Incorrect behavior
-  `type:performance`     Speed or memory improvement
-  `type:docs`            Documentation
-  `type:refactor`        Internal restructuring
-  `area:core`            Core engine
-  `area:spatial-model`   Internal model
-  `area:format`          Format importer/exporter
-  `area:native`          Native interop
-  `area:mcp`             MCP server
-  `area:cli`             CLI
-  `area:adapter`         Application adapter
-  `platform:windows`     Windows-specific
-  `platform:linux`       Linux-specific
-  `platform:macos`       macOS-specific
-  `priority:p0`          Blocking
-  `priority:p1`          High
-  `priority:p2`          Normal
-  `good first issue`     Suitable for new contributors
-
-### 16.2 Issue templates
-
-Create templates for: - Bug report. - Feature proposal. - New format
-support. - Performance report. - Compatibility report.
-
-A new format-support issue should ask for: - Source format and
-version. - Target format and use case. - Required semantics and
-geometry. - Expected data sizes. - Sample files and redistribution
-rights. - Required platforms. - Expected conversion losses. - Existing
-libraries considered.
-
-### 16.3 Pull request checklist
-
--   [ ] Scope and motivation are clear.
--   [ ] Tests cover the behavior.
--   [ ] No source data is modified unexpectedly.
--   [ ] Large-data memory behavior is considered.
--   [ ] Native ownership and error paths are safe, if applicable.
--   [ ] Cross-platform impact is documented.
--   [ ] Format losses and limitations are documented.
--   [ ] Dependencies and licenses are reviewed.
--   [ ] Public API changes include documentation and migration notes.
-
-### 16.4 Architecture Decision Records
-
-Create an ADR for decisions that are expensive to reverse, including: -
-C# and .NET target strategy. - Internal geometry model. -
-Coordinate-system representation. - Native ABI and memory ownership. -
-OpenUSD and 3D Tiles responsibilities. - Cache/index format and
-compatibility. - Recipe schema and versioning. - Package and plugin
-model.
-
-## 17. Risks and mitigations
-
-  -----------------------------------------------------------------------
-  Risk                    Impact                  Mitigation
-  ----------------------- ----------------------- -----------------------
-  Scope becomes too broad No complete workflow    Build vertical slices;
-                          ships                   defer formats
-
-  Internal model becomes  CAD/GIS/3DGS meaning is Separate geometry
-  a lowest common         lost                    families and semantic
-  denominator                                     layers
-
-  Native dependencies     Fragile releases        Isolate native adapters
-  complicate                                      and test early
-  cross-platform builds                           
-
-  Large data exhausts     Crashes and poor        Indexing, streaming,
-  memory                  usability               chunking, memory
-                                                  budgets
-
-  Coordinate mistakes     Spatially incorrect     Explicit CRS/units and
-                          output                  geospatial test
-                                                  fixtures
-
-  Lossy conversion is     Users trust invalid     Conversion-loss reports
-  hidden                  outputs                 and validation
-
-  Dependency licenses     Distribution            License inventory and
-  conflict                restrictions            release review
-
-  MCP tools expose unsafe Local data risk         Root restrictions,
-  file access                                     validation, no implicit
-                                                  overwrite
-
-  Format standards evolve Compatibility           Versioned capability
-                          regressions             matrix and fixtures
-
-  Too many adapters too   Maintenance burden      Start with file-based
-  early                                           interchange
-  -----------------------------------------------------------------------
-
-## 18. First 30-day implementation plan
-
-This is a suggested sequence, not a deadline commitment.
-
-### Week 1 --- Repository and build foundation
-
--   [ ] Create repository and solution.
--   [ ] Choose .NET SDK and initial target frameworks.
--   [ ] Add CI for Windows and Linux; add macOS build where feasible.
--   [ ] Add test projects, formatting, analyzers, and basic
-    documentation.
--   [ ] Write ADR-001: C#-first architecture and native-module policy.
-
-### Week 2 --- Model prototype
-
--   [ ] Define dataset, feature, transform, bounds, CRS, units, and
-    provenance.
--   [ ] Define distinct CAD, mesh, point-cloud, and Gaussian geometry
-    abstractions.
--   [ ] Add serialization prototype.
--   [ ] Add round-trip and invariant tests.
--   [ ] Write ADR-002: internal spatial data model.
-
-### Week 3 --- Choose and spike the first vertical slice
-
--   [ ] Compare STEP → USD/glTF and CityGML → 3D Tiles as initial
-    workflows.
--   [ ] Select a small redistributable fixture.
--   [ ] Test candidate libraries and their licenses/platform support.
--   [ ] Measure import time, memory, output quality, and conversion
-    losses.
--   [ ] Write ADR-003: first format workflow and native dependencies.
-
-### Week 4 --- Deliver a minimal end-to-end prototype
-
--   [ ] Implement inspect and import for the chosen source format.
--   [ ] Implement one transformation.
--   [ ] Export one target format.
--   [ ] Generate a conversion report.
--   [ ] Add integration tests and a reproducible sample command.
--   [ ] Publish the first architecture and benchmark notes.
-
-**30-day success criterion:** one small but real dataset can be
-imported, inspected, transformed, exported, and validated on at least
-Windows and Linux. A narrow working pipeline is more valuable than many
-empty format modules.
-
-## 19. Immediate decisions to record
-
-Before substantial implementation, resolve these decisions as ADRs:
-
-1.  **First vertical slice:** STEP → USD/glTF, or CityGML/PLATEAU → 3D
-    Tiles?
-2.  **.NET target:** Which .NET versions must the standalone core
-    support, and what compatibility constraints apply to Unity adapters?
-3.  **Native packaging:** Ship native libraries alongside the
-    application, or discover them as optional plugins?
-4.  **Internal persistence:** Use a versioned project/dataset format, or
-    keep the first release file-and-cache based?
-5.  **Public API stability:** Which interfaces are internal until the
-    first stable release?
-
-Recommended defaults: - C# / .NET for the standalone engine. - C ABI +
-P/Invoke for native modules. - OCCT for CAD rather than implementing a
-CAD kernel from scratch. - OpenUSD and 3D Tiles as complementary
-export/integration formats. - Local files and caches before introducing
-a custom database. - One complete vertical slice before broad format
-coverage.
-
-## 20. Definition of success
-
-The project is successful when a user can take data from different
-domains, inspect its structure and meaning, perform a documented
-processing recipe, and produce validated artifacts for a target
-application---without needing a cloud service or surrendering all source
-information to a single mesh representation.
-
-The key differentiator should be **reliable, explainable conversion of
-heterogeneous 3D spatial data**, not simply the number of supported file
-extensions.
+**終了条件:** 再現可能なベースラインと具体的な改善目標、対応CityGML版、最初のUnity取り込み単位が決まっている。
+
+### フェーズ1: リポジトリとビルド基盤
+
+**目的:** Unityパッケージの継続開発と自動検証の土台を作る。
+
+- [ ] Unity Package Managerの最小パッケージとテスト用Unityプロジェクトを用意する。
+- [ ] 対応Unity Editor版とホストOSを固定し、GitHub Actionsで各環境のコンパイルを通す。
+- [ ] 代表OSで少なくとも一つのUnity EditMode／単体テストをCIで通す。
+- [ ] CityGMLの小さな適法なフィクスチャを登録し、ライセンス・出所を記載する。
+- [ ] 利用者向けのセットアップ、入力データ条件、既知の制約をREADMEに記載する。
+
+**終了条件:** PRごとに対象OSのビルドと一つ以上のテスト経路が自動実行される。
+
+### フェーズ2: CityGMLからUnityへの最小取り込み
+
+**目的:** 小さなCityGMLファイルの選択地物を、Unityで利用できる状態にする。
+
+- [ ] 選定したCityGML版のReaderで小さなフィクスチャを逐次解析する。
+- [ ] 対象範囲、地物種別、LODのうち最初に必要な選択条件を実装する。
+- [ ] 地物ID・属性と形状データを共通型でUnityアダプターへ渡す。
+- [ ] Unity Meshを生成し、Editor上で選択データを確認できる最小導線を作る。
+- [ ] 進捗、キャンセル、部分失敗を実装し、単体・EditMode・統合テストを用意する。
+- [ ] CI上で小さなデータの読み込みと生成結果を検証する。
+
+**終了条件:** 小さなCityGMLデータの指定範囲をUnityへ取り込み、地物ID・属性・メッシュの対応をテストで確認できる。
+
+### フェーズ3: 粒度と性能の改善
+
+**目的:** 大きな一括取り込みを避け、利用者の選択単位でデータを段階表示する。
+
+- [ ] XML全体のDOM構築を避けるストリーミング／イベント駆動方式を評価する。
+- [ ] 空間範囲・地物種別・LODで、不要な地物の形状生成を省く。
+- [ ] 論理地物の識別を保ちながらMeshをバッチ化し、Unityオブジェクト数を制御する。
+- [ ] データ形式の制約に応じたインデックスまたは再利用可能なメタデータを評価する。
+- [ ] 大きな代表データで、初回表示時間・総時間・ピークメモリをフェーズ0のベースラインと比較する。
+- [ ] 性能目標を満たさない場合は、プロファイル結果に基づいてボトルネックを一つずつ解消する。
+
+**終了条件:** 選択していない領域の不要なMeshを生成せず、測定条件下で定義済みの初回表示・メモリ目標を満たす。
+
+### フェーズ4: Godot / Unreal Engineの実現性検証
+
+**目的:** Unityで作った処理を他エンジンへどの範囲で再利用できるかを実証する。
+
+- [ ] GodotとUnreal Engineで必要な実行環境、言語、メッシュ・属性API、配布方式を調査する。
+- [ ] 共通のCityGML Reader／データ表現を最小サンプルとして各エンジンから利用する。
+- [ ] 同一のCityGMLフィクスチャで、地物選択・ジオメトリ・属性を照合する。
+- [ ] 必要なブリッジや別言語実装の保守コストを評価し、対応エンジンを一つずつ追加するか判断する。
+
+**終了条件:** 各エンジンについて実現方式、制約、保守コストが記録され、対応対象を明示できる。三つのエンジンを同時に完成させることは条件にしない。
+
+### フェーズ5以降: 入力形式・エンジン対応の拡張
+
+CityJSON、CityGMLの追加版、3D Tiles、点群等は、利用者からの要望と技術検証に基づき個別に追加する。Unityから他形式への書き出しは、具体的な利用要求が確認されてから別途スコープを定義する。
+
+## 12. アーキテクチャ判断記録
+
+実装に影響する選択肢をADRに記録する。最初に作成するADRは次に限定する。
+
+1. **初期ユースケースと対応範囲:** 対象利用者、CityGML版、代表データ。
+2. **CityGML Reader:** ライブラリ／自前Reader、ストリーミング方式、CRS対応、依存ライセンス。
+3. **取り込み粒度と性能:** 選択単位、初回表示時間、ピークメモリ、Unity Meshのバッチ方針。
+4. **エンジン間の共有境界:** Unity、Godot、Unreal Engineで共有するコード、言語・ランタイム、ブリッジ方式。
+5. **Unity対応・CI:** Editor版、ホストOS、テスト経路。
+
+データベース、独自キャッシュ、書き出し形式は必要性が確認される段階まで設計を先送りする。
+
+## 13. リスクと対応
+
+| リスク | 初期の対応 |
+|---|---|
+| 初期スコープが広がり過ぎる | CityGMLの一つのデータセットとUnityへの取り込みに絞り、段階ごとに再評価する |
+| CityGMLの構造で単純なランダムアクセスができない | 一回目の走査とインデックス構築を許容し、実データで適切な方式を測る |
+| 読込の細分化でUnityのGameObject/Mesh数が増え過ぎる | 意味上の地物単位と描画上のバッチ単位を分ける |
+| Unity/Godot/Unreal間で共通コードを実行しにくい | Unreal等の方式を実装前に技術検証し、過度な共通化をしない |
+| CityGMLのCRSや座標精度を誤る | 対象データのCRSと原点を明示し、座標を推測しない |
+| 対応するエンジンやOSが増え、保守が難しくなる | 対応マトリクスを明示し、エンジン・OSごとのCIが通る範囲だけをサポート対象とする |
+| テストデータを配布できない | 出所・ライセンスを確認した小さなCityGMLフィクスチャを選ぶ |
+
+## 14. 成功の定義
+
+初期版の成功は、対応形式やエンジンの数では測らない。利用者が選択したCityGML都市モデルの範囲・地物をUnityへ取り込み、必要な地物情報を参照できること、取り込み時間とメモリが計測され、細粒度・段階取り込みの改善を示せることを成功とする。
+
+GitHub Actionsで対応ホストOSごとのビルドが通り、少なくとも一つの単体／EditModeテスト経路が継続して成功する。長期的には、同じ読込コアをGodotやUnreal Engineでも無理なく利用できるかを実証し、対応範囲を広げる。
