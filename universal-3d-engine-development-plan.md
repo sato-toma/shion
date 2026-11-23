@@ -213,32 +213,35 @@ MVPではCityGMLを入力として扱う。ほかの形式はUnityへの入力�
 ```text
 universal-3d-engine/
 ├── src/
-│   ├── Core/                         # エンジン非依存の型と読込制御
+│   ├── Core/
+│   │   └── Tests/
 │   ├── Readers/
-│   │   └── CityGML/                  # 選定CityGML版のReader
+│   │   └── CityGML/
+│   │       └── Tests/
 │   └── GameEngines/
-│       └── Unity/                    # Unity連携
+│       └── Unity/
 │           ├── Runtime/
 │           ├── Editor/
 │           ├── Tests/
 │           └── package.json
 ├── tests/
-│   ├── Core.Tests/
-│   └── Readers/
-│       └── CityGML.Tests/
+│   └── Integration/
 ├── test-data/
 │   └── README.md
 ├── samples/
 ├── docs/
-│   └── decisions/
+│   ├── decisions/
+│   └── templates/
 ├── .github/
-│   └── workflows/
+│   ├── workflows/
+│   └── copilot-instructions.md
 ├── .gitattributes
 ├── .gitignore
+├── CONTRIBUTING.md
 └── README.md
 ```
 
-製品コードは責務別に`src/`へまとめる。CityGMLのReaderとゲームエンジン連携を分け、Unity固有のRuntime、Editor、テスト、Package Manager定義は`src/GameEngines/Unity/`内に置く。Godot、Unreal Engineの階層は実装を始める段階で追加し、空のプロジェクトを先行して作らない。
+製品コードは責務別に`src/`へまとめる。単体テストは対応するモジュールの`Tests/`に置き、Unity固有のRuntime、Editor、テスト、Package Manager定義は`src/GameEngines/Unity/`内に置く。複数モジュールをまたぐ統合テストのみ`tests/Integration/`に置く。Godot、Unreal Engineの階層は実装を始める段階で追加し、空のプロジェクトを先行して作らない。
 
 ## 11. 段階的な開発ロードマップ
 
@@ -261,6 +264,8 @@ universal-3d-engine/
 
 **目的:** Unityパッケージの継続開発と自動検証の土台を作る。
 
+- [ ] `CONTRIBUTING.md`にブランチ、コミット、テスト、完了記録の手順を記載する。
+- [ ] `docs/templates/development-plan.md`を用意し、`.local/plans/`をGit管理対象外にする。
 - [ ] Unity Package Managerの最小パッケージとテスト用Unityプロジェクトを用意する。
 - [ ] 対応Unity Editor版とホストOSを固定し、GitHub Actionsで各環境のコンパイルを通す。
 - [ ] 代表OSで少なくとも一つのUnity EditMode／単体テストをCIで通す。
