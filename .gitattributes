@@ -1,0 +1,28 @@
+# Normalize text files across operating systems.
+* text=auto
+
+# Keep shell scripts runnable on Unix-like systems.
+*.sh text eol=lf
+
+# Use conventional Windows line endings for command scripts.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# Common binary 3D assets and point-cloud data.
+*.glb binary
+*.usdc binary
+*.usdz binary
+*.spz binary
+*.las binary
+*.laz binary
+
+# Common binary images and archives.
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.gif binary
+*.webp binary
+*.tif binary
+*.tiff binary
+*.zip binary
+*.7z binary
